@@ -20,7 +20,7 @@ jobs:
     env:
       SAP_DB_PATH: windguru_sap.db
       SAP_DRY_RUN: ${{ vars.SAP_DRY_RUN || '1' }}
-      STATE_DIR: ${{ runner.temp }}/sap-state
+      STATE_DIR: /tmp/windguru-sap-state
     steps:
       - uses: actions/checkout@v7
         with:
