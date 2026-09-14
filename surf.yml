@@ -1,0 +1,77 @@
+name: Windguru SAP
+on:
+  schedule:
+    - cron: '17 */2 * * *'
+  workflow_dispatch:
+    inputs:
+      initialize_state:
+        description: 'Criar branch de estado na PRIMEIRA execucao'
+        type: boolean
+        default: false
+permissions:
+  contents: write
+concurrency:
+  group: windguru-sap-state
+  cancel-in-progress: false
+jobs:
+  forecast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SAP_DB_PATH: windguru_sap.db
+      SAP_DRY_RUN: ${{ vars.SAP_DRY_RUN || '1' }}
+      STATE_DIR: ${{ runner.temp }}/sap-state
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -v
+      - name: Restaurar estado duravel
+        id: state
+        env:
+          INITIALIZE: ${{ inputs.initialize_state }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if git ls-remote --exit-code --heads origin sap-state; then
+            git fetch origin sap-state
+            git worktree add --detach "$STATE_DIR" FETCH_HEAD
+            test -f "$STATE_DIR/windguru_sap.db"
+          else
+            result=$?
+            if [ "$result" != 2 ] || [ "$INITIALIZE" != true ]; then
+              echo 'Estado indisponivel. Nao enviar. Inicialize manualmente apenas na primeira execucao.'
+              exit 1
+            fi
+            git worktree add --detach "$STATE_DIR" HEAD
+            git -C "$STATE_DIR" switch --orphan sap-state
+            python -c 'import os,sqlite3; c=sqlite3.connect(os.path.join(os.environ["STATE_DIR"], "windguru_sap.db")); c.execute("CREATE TABLE sap_state_version (version INTEGER)"); c.execute("INSERT INTO sap_state_version VALUES (1)"); c.commit(); c.close()'
+            git -C "$STATE_DIR" add -f windguru_sap.db
+            git -C "$STATE_DIR" commit -m 'Initialize SAP state'
+            git -C "$STATE_DIR" push origin HEAD:refs/heads/sap-state
+          fi
+          cp "$STATE_DIR/windguru_sap.db" "$SAP_DB_PATH"
+          python -c 'import os,sqlite3; c=sqlite3.connect(os.environ["SAP_DB_PATH"]); assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"; c.close()'
+          echo 'ready=true' >> "$GITHUB_OUTPUT"
+      - name: Coletar, avaliar e notificar
+        env:
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+        run: python collector.py
+      - name: Persistir SQLite mesmo se o pipeline falhar
+        if: ${{ always() && steps.state.outputs.ready == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -c 'import os,sqlite3; src=sqlite3.connect(os.environ["SAP_DB_PATH"]); dst=sqlite3.connect(os.path.join(os.environ["STATE_DIR"], "windguru_sap.db")); src.backup(dst); dst.close(); src.close()'
+          git -C "$STATE_DIR" add -f windguru_sap.db
+          if ! git -C "$STATE_DIR" diff --cached --quiet; then
+            git -C "$STATE_DIR" commit -m 'Persist forecast and notification state'
+            git -C "$STATE_DIR" push origin HEAD:refs/heads/sap-state
+          fi

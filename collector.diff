@@ -1,0 +1,86 @@
+--- collector.py (original)
++++ collector.py (estendido)
+@@ -17,10 +17,11 @@
+ o que realmente aconteceu.
+ 
+ Como rodar:
+-    pip install requests --break-system-packages
++    pip install -r requirements.txt
+     python collector.py
+ """
+ 
++import os
+ import sqlite3
+ import requests
+ from datetime import datetime, timezone
+@@ -32,8 +33,8 @@
+ LATITUDE = -23.01
+ LONGITUDE = -43.365
+ TIMEZONE = "America/Sao_Paulo"
+-FORECAST_DAYS = 3
+-DB_PATH = "windguru_sap.db"
++FORECAST_HOURS = 72
++DB_PATH = os.environ.get("SAP_DB_PATH", "windguru_sap.db")
+ 
+ MARINE_URL = "https://marine-api.open-meteo.com/v1/marine"
+ FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+@@ -49,7 +50,7 @@
+             "swell_wave_height", "swell_wave_direction", "swell_wave_period",
+         ]),
+         "timezone": TIMEZONE,
+-        "forecast_days": FORECAST_DAYS,
++        "forecast_hours": FORECAST_HOURS,
+         "models": "best_match",
+     }
+     resp = requests.get(MARINE_URL, params=params, timeout=30)
+@@ -65,7 +66,7 @@
+         "hourly": "wind_speed_10m,wind_direction_10m,wind_gusts_10m",
+         "wind_speed_unit": "kmh",
+         "timezone": TIMEZONE,
+-        "forecast_days": FORECAST_DAYS,
++        "forecast_hours": FORECAST_HOURS,
+     }
+     resp = requests.get(FORECAST_URL, params=params, timeout=30)
+     resp.raise_for_status()
+@@ -97,18 +98,26 @@
+ def merge_and_save(conn, marine, wind):
+     coletado_em = datetime.now(timezone.utc).isoformat()
+ 
+-    # As duas respostas usam o mesmo timezone/forecast_days, entao os
+-    # vetores de tempo devem alinhar hora a hora.
++    # Validar antes de gravar; nunca associar horarios diferentes por indice.
++    for data in (marine, wind):
++        if not data["time"] or len(set(data["time"])) != len(data["time"]):
++            raise ValueError("Horarios vazios ou duplicados na API")
++        if any(len(values) != len(data["time"]) for values in data.values()):
++            raise ValueError("Vetores horarios inconsistentes na API")
++    if set(marine["time"]) != set(wind["time"]):
++        raise ValueError("Marine e Forecast retornaram horarios diferentes; tentar novamente")
++    wind_index = {time: i for i, time in enumerate(wind["time"])}
+     horarios = marine["time"]
+     rows = []
+     for i, horario in enumerate(horarios):
++        j = wind_index[horario]
+         rows.append((
+             SPOT_NAME,
+             coletado_em,
+             horario,
+-            wind["wind_speed_10m"][i],
+-            wind["wind_gusts_10m"][i],
+-            wind["wind_direction_10m"][i],
++            wind["wind_speed_10m"][j],
++            wind["wind_gusts_10m"][j],
++            wind["wind_direction_10m"][j],
+             marine["wave_height"][i],
+             marine["wave_period"][i],
+             marine["wave_direction"][i],
+@@ -142,6 +151,9 @@
+     total = merge_and_save(conn, marine, wind)
+     print(f"OK - {total} horas de previsao gravadas em {DB_PATH}")
+ 
++    from pipeline import evaluate_latest
++    evaluate_latest(conn, SPOT_NAME, TIMEZONE)
++
+     conn.close()
+ 
+ 
