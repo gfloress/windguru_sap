@@ -1,0 +1,36 @@
+name: Teste Pushover
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-notification:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - name: Enviar uma notificacao de teste
+        env:
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+        run: |
+          python - <<'PY'
+          from notifiers import Pushover
+
+          Pushover().send(
+              'Windguru SAP - Teste',
+              'Teste de notificacao via GitHub Actions. '
+              'As regras de surf continuam pendentes e o sistema permanece em simulacao. '
+              'Este teste nao altera o estado de deduplicacao.',
+          )
+          print('Pushover confirmou a aceitacao da notificacao de teste.')
+          PY
